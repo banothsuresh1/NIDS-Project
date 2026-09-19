@@ -6,3 +6,7 @@ __pycache__/
 venv/
 *.csv
 .DS_Store
+/models/
+notebooks/models/
+*.joblib
+*.keras

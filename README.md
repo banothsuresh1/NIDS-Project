@@ -36,7 +36,21 @@ src/nids/            Modular pipeline package, one module per stage group
   pipeline.py                          orchestrates all of the above
   ablation.py                           Stage 23 ablation-study helpers
 
-notebooks/NIDS_Pipeline.ipynb   Cell-by-cell walkthrough, stage by stage
+notebooks/
+  NIDS_Pipeline.ipynb                Full 13-stage walkthrough, driving src/nids
+  NIDS_MultiModal_Fusion_8Cell.ipynb  Condensed 8-cell version (early/feature-
+                                       level fusion of 3 modalities into one
+                                       classifier), also driving src/nids
+  NIDS_13Stage_Pipeline.ipynb         Self-contained 13-cell notebook (one cell
+                                       per stage), NOT dependent on src/nids --
+                                       implements its own parameter choices
+                                       where they differ (SMOTE+ENN instead of
+                                       custom KNN cleaning, scipy.optimize
+                                       fusion weights, fixed TC_t lambda=0.1,
+                                       Keras/TensorFlow BiLSTM instead of
+                                       PyTorch). See its title cell for the
+                                       specific judgment calls made where its
+                                       spec left something ambiguous.
 tests/                          Synthetic-data generator + smoke tests (dev only)
 ```
 
@@ -46,9 +60,12 @@ tests/                          Synthetic-data generator + smoke tests (dev only
 pip install -r requirements.txt
 ```
 
-Open `notebooks/NIDS_Pipeline.ipynb`, set `DATA_DIR` to your local
+Open whichever notebook matches what you need, set `DATA_DIR` to your local
 CIC-IDS2017 folder (default `D:\IDSPROJECT2026\CIC-IDS2017`), and run all
-cells.
+cells. `NIDS_13Stage_Pipeline.ipynb` also saves trained models to
+`notebooks/models/` via `joblib` (RF, XGBoost) and Keras' native format
+(BiLSTM) -- that folder is gitignored since trained model files don't belong
+in version control.
 
 For a quick sanity check without the real (~2.8M row) dataset:
 
