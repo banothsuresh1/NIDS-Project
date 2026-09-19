@@ -74,8 +74,14 @@ _LABEL_ALIASES.update({
 
 
 def normalize_label(raw: pd.Series) -> pd.Series:
+    # Series.astype(str) on an OBJECT-dtype column does NOT convert NaN to
+    # the string "nan" (that only happens for non-object dtypes) -- a
+    # genuinely blank/missing Label cell in a real CIC-IDS2017 CSV (a known
+    # data-quality issue: a handful of malformed rows in the wild dumps)
+    # survives as a float and crashes `.lower()` downstream. fillna first so
+    # every element really is a string before any .str operation runs.
     cleaned = (
-        raw.astype(str)
+        raw.fillna("MISSING_LABEL").astype(str)
         .str.replace(r"\s+", " ", regex=True)
         .str.replace("–", "-", regex=False)
         .str.replace("\x96", "-", regex=False)
@@ -213,6 +219,18 @@ def load_raw_data(
         # normalized to 'label'; if truly absent this is a hard error.
         raise KeyError("No 'label' column found after normalization; check source CSVs.")
     data[config.LABEL_COLUMN] = normalize_label(data[config.LABEL_COLUMN])
+
+    # Drop rows whose label could not be resolved to a real class (e.g. a
+    # genuinely blank Label cell from a malformed source row) -- a flow with
+    # no real label is unusable for supervised training and must not
+    # silently sit in the class list as a bogus "MISSING_LABEL" category.
+    unresolved = ~data[config.LABEL_COLUMN].isin(config.CLASSES)
+    if unresolved.any():
+        logger.warning(
+            "Dropping %d rows with unresolvable labels: %s",
+            unresolved.sum(), data.loc[unresolved, config.LABEL_COLUMN].value_counts().to_dict(),
+        )
+        data = data.loc[~unresolved].reset_index(drop=True)
 
     data["partition"] = data["day"].map(config.SPLIT_MAP)
 
