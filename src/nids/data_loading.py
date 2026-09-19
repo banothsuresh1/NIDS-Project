@@ -107,7 +107,10 @@ def discover_day_files(data_dir: Path) -> Dict[str, List[Path]]:
         raise FileNotFoundError(
             f"Dataset directory not found: {data_dir}. Update nids.config.DATA_DIR."
         )
-    csvs = sorted(data_dir.glob("*.csv")) + sorted(data_dir.glob("*.CSV"))
+    # On a case-insensitive filesystem (Windows, default macOS), glob("*.csv")
+    # and glob("*.CSV") return the SAME files with identical on-disk casing,
+    # so concatenating them double-loads every file. De-dupe via a set first.
+    csvs = sorted(set(data_dir.glob("*.csv")) | set(data_dir.glob("*.CSV")))
     if not csvs:
         raise FileNotFoundError(f"No CSV files found under {data_dir}")
 
@@ -123,6 +126,21 @@ def discover_day_files(data_dir: Path) -> Dict[str, List[Path]]:
     if missing:
         logger.warning("No CSV files found for day(s): %s", missing)
     return day_files
+
+
+def _read_csv_robust_encoding(path: Path, nrows: Optional[int]) -> pd.DataFrame:
+    """The real CIC-IDS2017 release ships its daily CSVs in Windows-1252, not
+    UTF-8 -- e.g. byte 0x96 (en-dash, used in labels like "Web Attack –
+    Brute Force") is not valid UTF-8 and pandas' default `read_csv` raises
+    UnicodeDecodeError on it. Try UTF-8 first (in case a re-exported copy
+    genuinely is UTF-8), fall back to cp1252, which is the known real
+    encoding of this dataset's problem files.
+    """
+    try:
+        return pd.read_csv(path, low_memory=False, nrows=nrows, encoding="utf-8")
+    except UnicodeDecodeError:
+        logger.info("  %s is not UTF-8 -- re-reading as cp1252 (Windows-1252).", path.name)
+        return pd.read_csv(path, low_memory=False, nrows=nrows, encoding="cp1252")
 
 
 _TS_FORMATS = ["%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M"]
@@ -156,7 +174,7 @@ def load_raw_data(
     for day, files in day_files.items():
         for f in files:
             logger.info("Loading %s (day=%s)", f.name, day)
-            df = pd.read_csv(f, low_memory=False, nrows=nrows_per_file)
+            df = _read_csv_robust_encoding(f, nrows_per_file)
             df = normalize_columns(df)
             df["day"] = day
             df["day_order"] = config.DAY_ORDER[day]
