@@ -57,7 +57,15 @@ class TrainOnlyPreprocessor:
 
         self.variance_selector_ = VarianceThreshold(threshold=1e-4)
         self.variance_selector_.fit(X_imp)
-        self.selected_cols_ = list(np.array(self.feature_cols)[self.variance_selector_.get_support()])
+        # Cast back to plain Python str: np.array(...)[mask] yields numpy.str_
+        # elements, which newer scikit-learn's strict feature-name check only
+        # tolerates when EVERY column in a DataFrame shares that exact
+        # subtype. Once these column names get mixed with plain-str columns
+        # elsewhere downstream (e.g. engineered feature names in a
+        # multi-modal fusion step), sklearn raises a TypeError. Plain str
+        # avoids the landmine entirely.
+        mask = self.variance_selector_.get_support()
+        self.selected_cols_ = [str(c) for c in np.array(self.feature_cols)[mask]]
         dropped = set(self.feature_cols) - set(self.selected_cols_)
         if dropped:
             logger.info("Variance filter dropped %d near-constant features: %s", len(dropped), sorted(dropped))
