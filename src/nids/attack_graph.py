@@ -35,20 +35,48 @@ SeqWithTime = List[Tuple[str, pd.Timestamp]]
 
 
 class AttackStateGraph:
+    """Edge weights are stored as a dense len(TOKENS)xlen(TOKENS) numpy
+    matrix, not a networkx graph -- on the real dataset this method is
+    called ~300K+ times per training run (once per observed transition),
+    and each call previously did 10 networkx.add_edge() calls (one per
+    candidate token), i.e. ~3M+ networkx calls. That was the dominant cost
+    of Stage 9. The EMA math is IDENTICAL (verified bit-for-bit against the
+    prior dict/networkx implementation); a networkx view is still available
+    via the `.graph` property for any external code that wants one, built
+    lazily/once from the matrix rather than incrementally.
+    """
+
     def __init__(self, rho: float = config.GRAPH_EMA_RHO, novel_weight: float = config.GRAPH_NOVEL_EDGE_WEIGHT):
         self.rho = rho
         self.novel_weight = novel_weight
-        self.graph = nx.DiGraph()
-        self.graph.add_nodes_from(config.TOKENS)
-        self._seen_source: set = set()
+        self._idx = config.TOKEN_TO_IDX
+        self._n = len(config.TOKENS)
+        self._W = np.zeros((self._n, self._n), dtype=np.float64)
+        self._seen_source_mask = np.zeros(self._n, dtype=bool)
+        self._graph_cache: nx.DiGraph = None
 
     def observe_transition(self, src: str, dst: str) -> None:
-        for cand in config.TOKENS:
-            indicator = 1.0 if cand == dst else 0.0
-            old = self.graph[src][cand]["weight"] if self.graph.has_edge(src, cand) else 0.0
-            new = self.rho * old + (1 - self.rho) * indicator
-            self.graph.add_edge(src, cand, weight=new)
-        self._seen_source.add(src)
+        i, j = self._idx[src], self._idx[dst]
+        row = self._W[i]
+        row *= self.rho
+        row[j] += 1 - self.rho
+        self._seen_source_mask[i] = True
+        self._graph_cache = None  # invalidate lazy networkx view
+
+    @property
+    def graph(self) -> nx.DiGraph:
+        """Lazily-built networkx view of the current weights (visualization
+        / external inspection only -- nothing in this package reads it)."""
+        if self._graph_cache is None:
+            g = nx.DiGraph()
+            g.add_nodes_from(config.TOKENS)
+            for i, src in enumerate(config.TOKENS):
+                if not self._seen_source_mask[i]:
+                    continue
+                for j, dst in enumerate(config.TOKENS):
+                    g.add_edge(src, dst, weight=float(self._W[i, j]))
+            self._graph_cache = g
+        return self._graph_cache
 
     def build_from_training(self, session_sequences: Dict[str, SeqWithTime]) -> "AttackStateGraph":
         # Process sessions in chronological order of their first event, so
@@ -66,16 +94,19 @@ class AttackStateGraph:
         logger.info(
             "Attack-state graph built from %d training sessions (%d transitions). "
             "Source nodes observed: %d/%d tokens.",
-            len(ordered), n_transitions, len(self._seen_source), len(config.TOKENS),
+            len(ordered), n_transitions, int(self._seen_source_mask.sum()), len(config.TOKENS),
         )
         return self
 
     def edge_weight(self, src: str, dst: str) -> float:
-        if src not in self._seen_source:
+        # Direct matrix lookup -- this is called once per transition in every
+        # session's TC_t/G_w computation (millions of calls on the real
+        # dataset), so it must NOT go through the lazy `.graph` networkx
+        # view; that property is for external/visualization use only.
+        i = self._idx[src]
+        if not self._seen_source_mask[i]:
             return self.novel_weight
-        if self.graph.has_edge(src, dst):
-            return float(self.graph[src][dst]["weight"])
-        return self.novel_weight
+        return float(self._W[i, self._idx[dst]])
 
     def update_edge_streaming(self, src: str, dst: str) -> None:
         """Used ONLY by the Stage 12 streaming simulation to incrementally

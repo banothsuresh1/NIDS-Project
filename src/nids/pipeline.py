@@ -38,6 +38,84 @@ def stage1_2_load_clean_split(data_dir: Optional[Path] = None, nrows_per_file: O
     return train_df, val_df, test_df
 
 
+def stage1_2_load_clean_split_stratified(
+    data_dir: Optional[Path] = None,
+    nrows_per_file: Optional[int] = None,
+    test_size: float = 0.20,
+    val_size: float = 0.15,
+    random_state: int = config.RANDOM_SEED,
+):
+    """NON-TEMPORAL BASELINE -- a stratified random split, offered as a
+    supplementary comparison alongside (never instead of) the chronological
+    default above. Review §5 explicitly allows this only for a clearly-
+    labelled non-temporal baseline table, never as the primary result: a
+    random split lets flows from the same session land in both train and
+    test, which is a real information leak for every session-level
+    component downstream (Stage 4+) -- any metric from this split will read
+    optimistically high for reasons that have nothing to do with model
+    quality. Its only legitimate purpose here is giving every class real
+    training examples (PortScan/DDoS/Web-Attacks/etc. are otherwise
+    entirely absent from Monday+Tuesday) for a full-coverage demo/ablation.
+
+    Label every result from this function "non-temporal baseline" in
+    whatever you report -- never as the paper's headline number.
+    """
+    df = data_loading.load_raw_data(data_dir, nrows_per_file=nrows_per_file)
+    feat_cols_all = features.candidate_feature_columns(df)
+    df = data_loading.clean_data(df, numeric_cols=feat_cols_all)
+
+    from sklearn.model_selection import train_test_split
+
+    # Extremely rare classes (Heartbleed is ~11 rows in the real dataset)
+    # can have too few members to survive TWO successive stratified splits.
+    # sklearn raises a clear ValueError naming the offending class in that
+    # case; re-raise with guidance rather than letting a cryptic stack trace
+    # be the only signal.
+    labels = df[config.LABEL_COLUMN]
+    try:
+        train_val_df, test_df = train_test_split(
+            df, test_size=test_size, stratify=labels, random_state=random_state
+        )
+        relative_val_size = val_size / (1.0 - test_size)
+        train_df, val_df = train_test_split(
+            train_val_df, test_size=relative_val_size,
+            stratify=train_val_df[config.LABEL_COLUMN], random_state=random_state,
+        )
+    except ValueError as e:
+        raise ValueError(
+            f"{e}\nA class has too few total rows to survive two successive "
+            f"stratified splits at test_size={test_size}, val_size={val_size}. "
+            "Lower test_size/val_size, or accept that this extremely rare "
+            "class will need the chronological split's honest zero-shot "
+            "treatment instead."
+        ) from e
+
+    for part_df, name in ((train_df, "train"), (val_df, "val"), (test_df, "test")):
+        part_df["partition"] = name
+
+    logger.warning(
+        "Using the STRATIFIED (non-temporal baseline) split -- flows from the "
+        "same session can land in both train and test. Do not report metrics "
+        "from this split as the primary result; see this function's docstring."
+    )
+    train_df = train_df.reset_index(drop=True)
+    val_df = val_df.reset_index(drop=True)
+    test_df = test_df.reset_index(drop=True)
+    logger.info(
+        "Stratified split -- train/val/test flow counts: %d / %d / %d",
+        len(train_df), len(val_df), len(test_df),
+    )
+    zero_shot = check_zero_shot_classes(train_df[config.LABEL_COLUMN])
+    if zero_shot:
+        logger.warning(
+            "Classes still absent from training even under the stratified "
+            "split: %s -- these likely have too few total rows in the "
+            "dataset to survive a stratified split at this test_size/val_size.",
+            zero_shot,
+        )
+    return train_df, val_df, test_df
+
+
 def check_zero_shot_classes(y_train: pd.Series) -> List[str]:
     """CRITICAL DATA-REALITY CAVEAT: in the real CIC-IDS2017 release,
     Heartbleed flows appear ONLY in the Wednesday capture and Infiltration
