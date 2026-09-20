@@ -146,6 +146,103 @@ def check_zero_shot_classes(y_train: pd.Series) -> List[str]:
     return zero_shot
 
 
+def print_full_dataset_diagnostics(df: pd.DataFrame) -> pd.DataFrame:
+    """Diagnostic-only helper (no pipeline stage depends on this): prints the
+    full-dataset shape/columns, a (label, day) count table, and per-class
+    totals, so the real day-attack mapping can be verified directly against
+    whatever CSVs were actually loaded, rather than assumed from the public
+    dataset description. Call this on the `df` returned by
+    `data_loading.load_raw_data()` (i.e. BEFORE `split_partitions`), since
+    `day` and `config.LABEL_COLUMN` are both already-normalized columns at
+    that point (raw CSV headers/labels are never 'Label'/'day' verbatim --
+    see `data_loading.normalize_columns`/`normalize_label`).
+
+    Returns the groupby(label, day) count table (also printed) for reuse.
+    """
+    print(f"Full dataset shape: {df.shape}")
+    print(f"Columns: {list(df.columns)}")
+
+    label_day_counts = (
+        df.groupby([config.LABEL_COLUMN, "day"]).size().rename("count").reset_index()
+    )
+    print(f"\n(label, day) count table -- {len(label_day_counts)} rows:")
+    print(label_day_counts.to_string())
+
+    print(f"\n{config.LABEL_COLUMN} value_counts():")
+    print(df[config.LABEL_COLUMN].value_counts().to_string())
+
+    return label_day_counts
+
+
+def seed_zero_shot_classes_from_val(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    seed_per_class: int = 500,
+    random_state: int = config.RANDOM_SEED,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """OPT-IN, NON-DEFAULT helper for the chronological split only -- moves
+    up to `seed_per_class` rows per zero-training-count class OUT OF val_df
+    and INTO train_df (removing those rows from val), so those classes get
+    at least some real training examples instead of being strict zero-shot.
+
+    IMPORTANT STRUCTURAL GAP -- this can only help classes that are actually
+    PRESENT in val_df. Under this project's `config.SPLIT_MAP`
+    (Mon+Tue=train, Wed=val, Thu+Fri=test), val_df is Wednesday-only, and in
+    the real CIC-IDS2017 release Wednesday contains ONLY DoS Hulk/DoS
+    GoldenEye/DoS slowloris/DoS Slowhttptest + Heartbleed. Concretely, this
+    function CANNOT seed PortScan, DDoS, Bot, any Web Attack variant, or
+    Infiltration -- those only exist on Thursday/Friday (test_df), which
+    this function deliberately does NOT touch (pulling from test_df would
+    contaminate test-set generalization metrics, which is a materially
+    worse problem than leaving those classes zero-shot). Call
+    `check_zero_shot_classes` again after this to see exactly which classes
+    remain unreachable.
+
+    Also note this moves rows validation was going to use for fusion-weight
+    calibration / lambda selection into training -- val_df shrinks
+    accordingly, which is reported below.
+    """
+    zero_shot = check_zero_shot_classes(train_df[config.LABEL_COLUMN])
+    seeded_counts: Dict[str, int] = {}
+    seeded_frames: List[pd.DataFrame] = []
+    remaining_val = val_df
+
+    for cls in zero_shot:
+        cls_rows = remaining_val[remaining_val[config.LABEL_COLUMN] == cls]
+        n = min(seed_per_class, len(cls_rows))
+        if n == 0:
+            seeded_counts[cls] = 0
+            continue
+        sampled = cls_rows.sample(n=n, random_state=random_state)
+        seeded_frames.append(sampled)
+        seeded_counts[cls] = n
+        remaining_val = remaining_val.drop(sampled.index)
+
+    # NOTE: `split_partitions` gives each partition its own reset_index(drop=True),
+    # so train_df/val_df index labels collide by coincidence even though they
+    # are different rows. Concatenating with ignore_index=True (rather than
+    # sort_index() on the raw labels) avoids handing back a train_df with a
+    # non-unique index, which would silently break any later `.loc[label]`
+    # lookup into multiple rows.
+    if seeded_frames:
+        train_df = pd.concat([train_df] + seeded_frames, ignore_index=True)
+    val_df = remaining_val.reset_index(drop=True)
+
+    still_zero = [c for c, n in seeded_counts.items() if n == 0]
+    logger.warning(
+        "seed_zero_shot_classes_from_val: seeded %s. Still ZERO training "
+        "examples (not present in val_df -- see docstring, these need "
+        "test_df or remain honest zero-shot): %s. New train/val sizes: %d / %d",
+        {k: v for k, v in seeded_counts.items() if v > 0}, still_zero,
+        len(train_df), len(val_df),
+    )
+    print(f"Seeded per-class counts (moved val -> train): {seeded_counts}")
+    print(f"Classes still zero-shot after seeding (not present in val_df at all): {still_zero}")
+    print(f"New train size: {len(train_df)}, new val size: {len(val_df)}")
+
+    return train_df, val_df
+
+
 # --------------------------------------------------------------------------
 # Stage 4-5: sessions + behavioral events (per partition, independently)
 # --------------------------------------------------------------------------
