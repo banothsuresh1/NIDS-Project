@@ -88,13 +88,25 @@ class TrainOnlyPreprocessor:
 
 
 def compute_class_weights(y_train: pd.Series, num_classes: int = config.NUM_CLASSES) -> Dict[str, float]:
-    """Branch A: W_c = N_train / (K * N_c). Applied to RF, XGBoost and the LSTM loss."""
+    """Branch A: W_c = N_train / (K * N_c). Applied to RF, XGBoost and the LSTM loss.
+
+    A class absent from training gets a floor of 1.0 rather than 0.0, and
+    every weight is capped at 50.0. This is defensive well-formedness only
+    -- it does NOT and CANNOT make any model predict a class it has zero
+    training rows for. RF's class_weight dict, XGBoost's sample_weight
+    (y_train.map(...)), and the LSTM's per-sample CrossEntropyLoss weight
+    are all looked up by each TRAINING SAMPLE'S OWN label; a class with no
+    training samples is never looked up by any of them, so its weight value
+    is inert. If a class shows 0 recall because N_c == 0, the fix is a
+    different training split, not this dict.
+    """
     n_train = len(y_train)
     counts = y_train.value_counts()
     weights = {}
     for cls in config.CLASSES:
         n_c = counts.get(cls, 0)
-        weights[cls] = float(n_train / (num_classes * n_c)) if n_c > 0 else 0.0
+        w = float(n_train / (num_classes * n_c)) if n_c > 0 else 1.0
+        weights[cls] = min(w, 50.0)
     return weights
 
 

@@ -172,8 +172,14 @@ FUSION_GRID_WT = [0.0, 0.05, 0.10, 0.15]
 # --------------------------------------------------------------------------
 # Stage 8: Frequent & Sequential Pattern Mining
 # --------------------------------------------------------------------------
-FPGROWTH_MIN_SUPPORT = 0.15
-PREFIXSPAN_MIN_SUPPORT = 0.15
+# 0.15 (15% of sessions) only surfaces near-universal BENIGN-browsing
+# itemsets on the real dataset -- attack-specific tokens (DOS_INDICATOR,
+# SCAN_ACTIVITY) sit under 3% of training flows, so nothing attack-specific
+# ever cleared the old bar. 0.02 lets those genuinely-attack-correlated
+# combinations (still real, still training-session-only) through, without
+# going so low that FP-Growth/PrefixSpan start mining noise.
+FPGROWTH_MIN_SUPPORT = 0.02
+PREFIXSPAN_MIN_SUPPORT = 0.02
 PREFIXSPAN_MAX_GAP_SECONDS = 900.0
 
 # --------------------------------------------------------------------------
