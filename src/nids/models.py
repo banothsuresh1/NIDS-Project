@@ -173,9 +173,14 @@ class BiLSTMClassifier:
 
         self.net.train()
         n = len(sequences)
+        # Per-epoch training loss/accuracy, for training-curve plots -- this
+        # is training-set performance only (fit() takes no held-out split),
+        # so plot it labeled as such, not as a train/val comparison.
+        self.history_: Dict[str, List[float]] = {"loss": [], "accuracy": []}
         for epoch in range(epochs):
             perm = np.random.permutation(n)
             total_loss = 0.0
+            correct = 0
             for batch_idx in self._batchify(list(perm), batch_size):
                 batch_seqs = [sequences[i] for i in batch_idx]
                 batch_y = torch.tensor(y_idx[batch_idx], dtype=torch.int64).to(self.device)
@@ -186,8 +191,13 @@ class BiLSTMClassifier:
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item() * len(batch_idx)
+                correct += int((logits.argmax(dim=1) == batch_y).sum().item())
+            epoch_loss = total_loss / n
+            epoch_acc = correct / n
+            self.history_["loss"].append(epoch_loss)
+            self.history_["accuracy"].append(epoch_acc)
             if verbose:
-                logger.info("LSTM epoch %d/%d - loss=%.4f", epoch + 1, epochs, total_loss / n)
+                logger.info("LSTM epoch %d/%d - loss=%.4f acc=%.4f", epoch + 1, epochs, epoch_loss, epoch_acc)
         return self
 
     def predict_proba(self, sequences: List[List[int]], batch_size: int = config.LSTM_BATCH_SIZE) -> np.ndarray:

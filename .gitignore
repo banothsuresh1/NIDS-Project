@@ -10,3 +10,4 @@ venv/
 notebooks/models/
 *.joblib
 *.keras
+/figures/
